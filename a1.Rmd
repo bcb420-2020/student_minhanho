@@ -1,0 +1,308 @@
+---
+title: "BCB420 - Assignment 1"
+output:
+  html_document:
+    df_print: paged
+author: "Minh An Ho"
+---
+## Dataset Information 
+Publication Title: Age-dependent skeletal muscle transcriptome response to bed rest-induced atrophy.\
+Publication Date: 2019-04-01\
+Publication Journal: J Appl Physiol\
+GEO ID: GSE113165
+
+## Install and Load Dependencies
+```{r setup, message=FALSE, results='hide'}
+# check to ensure all needed packages are installed
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+if (!requireNamespace("GEOquery", quietly = TRUE))
+  BiocManager::install("GEOquery")
+
+if (!requireNamespace("biomaRt", quietly = TRUE))
+  BiocManager::install("biomaRt")
+
+if (!requireNamespace("edgeR", quietly = TRUE))
+  BiocManager::install("edgeR")
+
+
+if (!requireNamespace("knitr", quietly = TRUE))
+  BiocManager::install("knitr")
+
+library(GEOquery)
+library(biomaRt)
+library(edgeR)
+library(knitr)
+```
+
+## Load the Dataset
+We load our information about our datased using the GEO id, we then extract our desired information to produce our sample set with appropriate labels.
+
+```{r dataset info, message=FALSE, results='hide'}
+GSE113165 <- GEOquery::getGEO("GSE113165", GSEMatrix =TRUE)
+
+show(GSE113165)
+GSE113165_data <- (pData(phenoData(GSE113165[[1]])))
+
+#Create sample set
+samples <- data.frame(GSE113165_data$description.1, GSE113165_data$`subject:ch1`, GSE113165_data$`age:ch1`, GSE113165_data$`Sex:ch1`, gsub("susceptibility: ", "", GSE113165_data$characteristics_ch1.5), gsub("time: ", "", GSE113165_data$characteristics_ch1.1))
+colnames(samples) <- c("id", "subject","age", "sex", "susceptibility", "time")
+
+#Create sample set
+samples <- data.frame(GSE113165_data$`subject:ch1`, GSE113165_data$`age:ch1`, GSE113165_data$`Sex:ch1`, gsub("susceptibility: ", "", GSE113165_data$characteristics_ch1.5), gsub("time: ", "", GSE113165_data$characteristics_ch1.1))
+samples <- t(samples)
+colnames(samples) <- GSE113165_data$description.1
+rownames(samples) <- c("subject","age", "sex", "susceptibility", "time")
+```
+
+Expression count data is downloaded and accessed here. Formatted as needed.
+
+```{r dataset counts, message=FALSE, results='hide'}
+
+#Reading in supplementary files with expression counts
+sfiles <- getGEOSuppFiles('GSE113165')
+fnames <- rownames(sfiles)
+expCounts <- read.delim(fnames[1],header=TRUE, check.names = FALSE)
+```
+
+```{r preview data}
+#Preview of data
+kable(head(expCounts))
+```
+
+## Clean the Data
+Here we remove genes with low expression count to clean up the dataset.
+
+```{r filtering}
+dim(expCounts)
+
+#Removing low counts
+cpms <- cpm(expCounts[2:57])
+rownames(cpms) <- expCounts[,1]
+keep <- rowSums(cpms >1) >=3
+expCounts_filtered <- expCounts[keep,]
+
+dim(expCounts_filtered)
+```
+
+## Normalization
+```{r regular box plot ,warning=FALSE}
+#Original Box Plot
+data2plot <- log2(cpm(expCounts_filtered[2:57]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "GSE113165 Samples")
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+```
+
+
+We will apply TMM (Trimmed Mean of M-Values) to normalize the filtered data. As you can see, the plot (and of course the data) adjusts so all the samples have a similar mean.
+```{r normalized box plot ,warning=FALSE}
+#Normalization
+filtered_data_matrix <- as.matrix(expCounts_filtered[2:57])
+rownames(filtered_data_matrix) <- expCounts_filtered$geneid
+d = DGEList(counts=filtered_data_matrix, group=samples["time",])
+d = calcNormFactors(d)
+normalized_counts <- cpm(d)
+
+#Normalized Box Plot
+data2plot <- log2(normalized_counts)
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "Normalized")
+abline(h = median(apply(data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+```
+
+
+We can also view the data in terms of a density plot, before and after normalization. We can see that the distribution (sample lines) are tighter and more similar.
+```{r density plot ,warning=FALSE}
+#Density Plot
+counts_density <- apply(log2(filtered_data_matrix), 2, density)
+#Calculate the Limits
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+        xlim <- range(c(xlim, counts_density[[i]]$x)); 
+        ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+
+#plot the first density plot to initialize the plot
+par(fig=c(0,0.5,0,1), new=FALSE)
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="Initial", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+
+normalized_counts_density <- apply(log2(normalized_counts), 2, density)
+#Calculate the Mormalized Limits
+xlim <- 0; ylim <- 0
+for (i in 1:length(normalized_counts_density)) {
+        xlim <- range(c(xlim, normalized_counts_density[[i]]$x)); 
+        ylim <- range(c(ylim, normalized_counts_density[[i]]$y))
+}
+
+cols <- rainbow(length(normalized_counts_density))
+ltys <- rep(1, length(normalized_counts_density))
+
+#Normalized Density Plot
+par(fig=c(0.50,1,0,1), new=TRUE)
+plot(normalized_counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="Normalized", cex.lab = 0.85)
+for (i in 1:length(normalized_counts_density)) lines(normalized_counts_density[[i]], col=cols[i], lty=ltys[i])
+```
+
+## Visualize the data
+
+I didn't use labels in this case as it crowded the MDS visual.
+
+In this case the samples are grouped in pre and post bed rest. There seems to some clustering between -0.5 and -1.0 of the x-axis, as well as 1.0 and 1.5, but it is difficult to see if one group is more prominent than another in the grouping.
+```{r MDS plot1, warning=FALSE}
+plotMDS(d, labels="o",
+        col = c("darkgreen","blue")[factor(samples["time",])])
+```
+
+Let's try to visualize in terms of low and high susceptibility to disuse-induced insulin resistance. It looks a bit clearer, and we can see there is a definite difference in groupings of the clusters. Meaning that those with similar susceptibility have similar expression.
+```{r MDS plot2, warning=FALSE}
+plotMDS(d, labels="o",
+        col = c("darkgreen","blue")[factor(samples["susceptibility",])])
+```
+
+Perhaps age is also a factor, let's visualize this. This group clusering is even more distinguishable here, showing the shared expression profiles of the age groups.
+```{r MDS plot3, warning=FALSE}
+plotMDS(d, labels="o",
+        col = c("darkgreen","blue")[factor(samples["age",])])
+```
+
+## HUGO Identifier Mapping
+We now map the ENSEMBL gene ids to HUGO (hgnc) identifiers using biomart, particularly the getGM function. 
+
+```{r HUGO mapping}
+#Adding another column to normalized_counts for ease of merging later
+ensembl_labels <- data.frame(rownames(normalized_counts))
+colnames(ensembl_labels) <- "ensembl_gene_id"
+normalized_counts <- cbind(normalized_counts, ensembl_labels)
+
+#Loading emsembl human data
+mart <- useEnsembl(biomart = "ensembl", 
+                   dataset = "hsapiens_gene_ensembl", 
+                   mirror = "useast")
+
+#Retreive HUGO symbols for each ENSEMBL ID and set as new rownames
+sample_HUGO <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), filters = "ensembl_gene_id", values = c(expCounts_filtered[1]), mart = mart)   
+```
+
+Some of the gene ids are not returned by getGM (depreciated or no symbol available) so these are not included in the dataset after merging with the returned ids. 
+
+```{r HUGO merge}
+#Integrating into counts
+normalized_counts_annot <- merge(sample_HUGO,normalized_counts, by.x="ensembl_gene_id", by.y="ensembl_gene_id", all.y=FALSE)
+```
+
+In addition, some of these returned gene ids have been returned with an empty string for the HUGO identifier, and these are also removed from the dataset.
+
+```{r empty HUGO}
+#Empty HUGO Removal
+nonempty_HUGO <- normalized_counts_annot["" != normalized_counts_annot[, 2],]
+```
+
+
+I also realized that there may be duplicate HUGO ids, so we remove the replicates and only keep a mean of the expression values. This means that as a result there is no ENSEMBL id associated with these expression values, this may cause an issue later, but we can always adjust this to map to one of the duplicate ids.
+
+```{r unique HUGO}
+#Unique HUGO symbols only
+HUGO_duplicate_name <- nonempty_HUGO[duplicated(nonempty_HUGO[,2]),2]
+
+for (x in HUGO_duplicate_name){
+  dup_index <- which(x == nonempty_HUGO[,2])
+  
+  #Store ENSEMBL ID
+  dup_ENSEMBL <- nonempty_HUGO[dup_index, 1]
+  
+  #Mean expression values
+  replacement_dup <- data.frame(t(colMeans(nonempty_HUGO[dup_index, 3:58])))
+  colnames(replacement_dup) <- gsub(colnames(replacement_dup), pattern="^X", replace="")
+  
+  #Save associated ids
+  replacement_dup[,"ensembl_gene_id"] <- ""
+  replacement_dup[,"hgnc_symbol"] <- HUGO_duplicate_name[x]
+  
+  #Remove duplicate rows
+  removed_dup <- nonempty_HUGO[-dup_index,]
+  
+  #Add meaned duplicates back
+  unique_counts <- rbind(removed_dup, replacement_dup)
+}
+
+#Preview into the dataset
+kable(head(unique_counts))
+```
+
+## Interpret and Document
+
+__What are the control and test conditions of the dataset?__
+
+Control condition: Vastus lateralis cells of YOUNG (N=9) and OLD (N=18) men and women before five days of bed rest
+
+Test condition: Vastus lateralis cells of YOUNG (N=9) and OLD (N=18) men and women after five days of bed rest
+
+__Why is the dataset of interest to you?__
+
+This dataset stood out to me as there are no direct interventions aside from a change in physical behaviour. I usually do not encounter experimental studies that do not incorporate pharmaceutical/biochemical intervention, so I was interested to see the resulting gene expression values.
+
+__Were there expression values that were not unique for specific genes? How did you handle these?__
+
+Yes. These were removed.
+```{r show non unique}
+#Number of duplicates
+length(setdiff(nonempty_HUGO[duplicated(nonempty_HUGO[,2]), 2], unique_counts))
+```
+
+__Were there expression values that could not be mapped to current HUGO symbols?__
+
+Yes. These were removed from the final dataset. The function call to getBM excluded depreciated ids and some of those with no HUGO symbol. There were some empty HUGO symbol strings returned, these were also removed from the final dataset.
+```{r show non HUGO}
+#Number of values that could not be mapped to HUGO symbols
+length(setdiff(rownames(normalized_counts),nonempty_HUGO[,1]))
+```
+
+__How many outliers were removed?__
+Low count outliers were removed and assigned to this variable. No other outliers were removed.
+
+```{r show outliers}
+#Low count outliers
+dim(expCounts_filtered)
+```
+
+__How did you handle replicates?__
+I averaged duplicate HUGO genes and added them to the dataset after removing the old genes.Aside from that, there were no replicate rows in the dataset after filtering, normalization, HUGO mapping and removing duplicate HUGO genes. Otherwise, I would remove them.
+```{r show replicates}
+table(duplicated(nonempty_HUGO))
+```
+
+__What is the final coverage of your dataset?__
+
+```{r show dimensions}
+#Starting coverage from given expression data
+dim(expCounts)
+
+#Coverage following filtering for low counts
+dim(expCounts_filtered)
+
+#Coverage after mapping to HUGO symbols
+dim(normalized_counts_annot)
+
+#Coverage after filtering for nonempty and unique symbols
+dim(unique_counts)
+```
+
+As we can see from the above code snippets, the initial dataset contained 58051 gene ids, however our final dataset, following all the steps of processing, contains 14969 gene ids.
+
+## References
+[1] Mahmassani ZS, Reidy PT, McKenzie AI, Stubben C et al. Age-dependent skeletal muscle transcriptome response to bed rest-induced atrophy. J Appl Physiol (1985) 2019 Apr 1;126(4):894-902. PMID: 30605403
+
+[2] Mahmassani ZS, Reidy PT, McKenzie AI, Stubben C et al. Disuse-induced insulin resistance susceptibility coincides with a dysregulated skeletal muscle metabolic transcriptome. J Appl Physiol (1985) 2019 May 1;126(5):1419-1429. PMID: 30763167
+
+[3] Isserlin R, BCB420-lectures-public, (2020), GitHub repository, https://github.com/risserlin/BCB420-lectures-public
