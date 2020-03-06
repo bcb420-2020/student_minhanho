@@ -301,15 +301,6 @@ old_pre_downregulated_genes <- output_hits_old_pre_rank$hgnc_symbol[
   which(output_hits_old_pre_rank$P.Value < 0.05 
         & output_hits_old_pre_rank$samples.typeold_pre < 0)]
 
-#Write gene names to file for future reference
-write.table(x=old_pre_upregulated_genes,
-            file=file.path("data","old_pre_upregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
-write.table(x=old_pre_downregulated_genes,
-            file=file.path("data","old_pre_downregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
-
-
 #Type-"young_post" up/down regulated genes
 young_post_upregulated_genes <- output_hits_young_post_rank$hgnc_symbol[
   which(output_hits_young_post_rank$P.Value < 0.05 
@@ -318,14 +309,6 @@ young_post_downregulated_genes <- output_hits_young_post_rank$hgnc_symbol[
   which(output_hits_young_post_rank$P.Value < 0.05 
         & output_hits_young_post_rank$samples.typeyoung_post < 0)]
 
-#Write gene names to file for future reference
-write.table(x=young_post_upregulated_genes,
-            file=file.path("data","young_post_upregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
-write.table(x=young_post_downregulated_genes,
-            file=file.path("data","young_post_downregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
-
 #Type-"young_pre" up/down regulated genes
 young_pre_upregulated_genes <- output_hits_young_pre_rank$hgnc_symbol[
   which(output_hits_young_pre_rank$P.Value < 0.05 
@@ -333,14 +316,6 @@ young_pre_upregulated_genes <- output_hits_young_pre_rank$hgnc_symbol[
 young_pre_downregulated_genes <- output_hits_young_pre_rank$hgnc_symbol[
   which(output_hits_young_pre_rank$P.Value < 0.05 
         & output_hits_young_pre_rank$samples.typeyoung_pre < 0)]
-
-#Write gene names to file for future reference
-write.table(x=young_pre_upregulated_genes,
-            file=file.path("data","young_pre_upregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
-write.table(x=young_pre_downregulated_genes,
-            file=file.path("data","young_pre_downregulated_genes.txt"),sep = "\t",
-            row.names = FALSE,col.names = FALSE,quote = FALSE)
 ```
 
 __1. Which method did you choose and why?__
@@ -409,6 +384,8 @@ pt2down <- publish_gosttable(head(gostres2down, n = 10),
                          show_columns = c("term_id", "term_name"),
                          filename = NULL)
 ```
+
+As shown, the first table is our multi-query and the following two are the up and down regulated sets queried individually. There is crossover between the multiquery and upregulated-query result sets, however the terms provided in the down regulated-query result is significantly shorter and less relevant.
 
 ## Interpretation
 
