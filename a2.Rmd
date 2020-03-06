@@ -1,0 +1,459 @@
+---
+title: "BCB420 - Assignment 2"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+author: "Minh An Ho"
+---
+# __Introduction__
+
+The dataset I have selected, "Using RNA sequencing to examine age-dependent skeletal muscle transcriptome response to bed rest-induced atrophy, and age independent disuse-induced insulin resistance" (GSE113165), records the transcriptome of vastus lateralis cells of YOUNG (N=9, 18-28 y) and OLD (N=18, 60-79 y) men and women before five days of bed rest (control) and after five days of bed rest (test condition). The subjects are also classified into susceptability (i.e. low, high) to disuse-induced insulin resistance. The study aims to understand gene expression associated with bed rest to offset resulting muscle loss.
+
+In the previous assessment in this course BCB420, Assignment 1, the dataset was processed - cleaned for low counts, normalized using TMM (Trimmed Mean of M-Values) and mapped to HUGO identifiers. Duplicate HUGO ids were averaged and genes with empty/unavailable HUGO ids were removed. The initial downloaded GEO dataset contained 58051 gene ids, however the final processed dataset, contained 14969 gene ids.
+
+# __Assignment 1 Contents__
+
+```{r test-main, child = 'a1.Rmd'}
+```
+
+# __Assignment 2 Contents__
+
+## Install and Load Dependencies
+```{r setup_a2, message=FALSE, results='hide'}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+if (!requireNamespace("GEOquery", quietly = TRUE))
+  BiocManager::install("GEOquery")
+
+if (!requireNamespace("biomaRt", quietly = TRUE))
+  BiocManager::install("biomaRt")
+
+if (!requireNamespace("edgeR", quietly = TRUE))
+  BiocManager::install("edgeR")
+
+
+if (!requireNamespace("knitr", quietly = TRUE))
+  BiocManager::install("knitr")
+
+library(GEOquery)
+library(biomaRt)
+library(edgeR)
+library(knitr)
+
+if (!requireNamespace("ComplexHeatmap", quietly = TRUE))
+  BiocManager::install("ComplexHeatmap")
+
+if (!requireNamespace("circlize", quietly = TRUE))
+  install.packages("circlize")
+
+if (!requireNamespace("dplyr", quietly = TRUE))
+  install.packages("dplyr")
+
+if (!requireNamespace("gprofiler2", quietly = TRUE))
+  install.packages("gprofiler2")
+
+library(ComplexHeatmap)
+library(circlize)
+library(dplyr)
+library(gprofiler2)
+
+```
+
+
+## Differential Gene Expression
+
+We begin with a bit of adjustments to data and matrices that we will use for the analysis. From Assignment 1, I need the sample data to hold the different patient parameters in each column rather than rows. We also adjust the column names in the count data to the descriptive titles so we can access and thus compare the conditions more easily. This is all followed by the creation of matrices for furthur functions.
+
+```{r prep_data, message=FALSE, results='hide'}
+#Adjust sample set to desired format
+samples <- data.frame(GSE113165_data$description.1, GSE113165_data$`subject:ch1`, GSE113165_data$`age:ch1`, GSE113165_data$`Sex:ch1`, gsub("susceptibility: ", "", GSE113165_data$characteristics_ch1.5), gsub("time: ", "", GSE113165_data$characteristics_ch1.1))
+colnames(samples) <- c("id", "subject","age", "sex", "susceptibility", "time")
+
+#Adding a new attribute to create specific types based on ANOVA
+samples[,"type"] <- paste(samples[,3], lapply(strsplit(as.character(samples[,6]), " "), `[[`, 1), sep="_")
+
+#Changing colnames from patient-sample ids to the descriptive title
+match_index <- match(colnames(unique_counts[3:58]), GSE113165_data[,"description.1"])
+colnames(unique_counts[3:58]) <- GSE113165_data[match_index,"title"]
+
+unique_counts <- unique_counts[which(!is.na(unique_counts[,2])),]
+
+#Data matrix for expression
+expressionMatrix <- as.matrix(unique_counts[,3:58])
+rownames(expressionMatrix) <- unique_counts[,2]
+colnames(expressionMatrix) <- colnames(unique_counts)[3:58]
+minimalSet <- ExpressionSet(assayData=expressionMatrix)
+
+#Create numerical matrix to produce a heatmap plot
+heatmap_matrix <- unique_counts[,3:ncol(unique_counts)]
+rownames(heatmap_matrix) <- unique_counts$ensembl_gene_id
+colnames(heatmap_matrix) <- colnames(unique_counts[,3:ncol(unique_counts)])
+
+#Row Normalization; scaling each row around the mean
+heatmap_matrix <- t(scale(t(heatmap_matrix)))
+
+#Changing colnames from patient-sample ids to the descriptive title
+match_index <- match(colnames(heatmap_matrix), GSE113165_data[,"description.1"])
+colnames(heatmap_matrix) <- GSE113165_data[match_index,"title"]
+```
+
+
+Now we begin the differential expression
+
+```{r diff_expression, message=FALSE, results='hide'}
+#Creating a design matrix based on the condition that is being tested and accounting for subject variability (i.e. Pre and post bed rest)
+model_ANOVA <- model.matrix(~ samples$type)
+
+#Fit to model_design
+fit_ANOVA <- lmFit(minimalSet, model_ANOVA)
+
+#Computing differential expression for the model
+#trend is TRUE as this is a RNAseq dataset
+fit2_ANOVA <- eBayes(fit_ANOVA,trend=TRUE)
+
+#Adjust fix based on Benjamin-Hochberg multiple hypothesis method
+topfit_ANOVA <- topTable(fit2_ANOVA, 
+                   coef=c(2:ncol(model_ANOVA)),
+                   adjust.method = "BH",
+                   number = nrow(expressionMatrix))
+
+#Merge hgnc names to topfit table
+output_hits_ANOVA <- merge(unique_counts[,1:2],
+                           topfit_ANOVA,
+                         by.y=0,by.x=2,
+                         all.y=TRUE)
+#Sort by P-value
+output_hits_ANOVA <- output_hits_ANOVA[order(output_hits_ANOVA$P.Value),]
+```
+
+__1. Calculate p-values for each of the genes in your expression set. How many genes were significantly differentially expressed? What thresholds did you use and why?__
+
+The P-values are generated by limma::eBayes(). 
+
+```{r show  P.values}
+(head(output_hits_ANOVA[,c("hgnc_symbol","ensembl_gene_id","P.Value")]))
+```
+
+Based on the code below, we can see that 2241 genes are significantly differentially expressed and within our threshold (< 0.05). We use the general rule that a p-value of greater than 0.05 represents the probability that the null hypothesis is true, therefore a p-value of less than 0.05 is statistically significant.
+
+```{r show passed P.values}
+#How many gene pass the threshold p-value < 0.05?
+length(which(output_hits_ANOVA$P.Value < 0.05))
+```
+
+__2. Multiple hypothesis testing - correct your p-values using a multiple hypothesis correction method. Which method did you use? And Why? How many genes passed correction?__
+
+Based on the default adjust.method parameter for edgeR::topTags(),the Benjamin-Hochberg method is used for multiple correction. This method is used over the others as a default and for this analysis, as it represents the false discovery rate amoungst the differentially expressed genes, which is less "stringent" than familywise error rate and thus more powerful.
+
+From the code below, we can see that 163 gene pass correction.
+
+```{r show correction}
+#How many genes pass correction?
+length(which(output_hits_ANOVA$adj.P.Val < 0.05))
+```
+
+__3. Show the amount of differentially expressed genes using an MA Plot or a Volcano plot. Highlight genes of interest.__
+
+Here we have the volcano plot representing the differentially expressed genes within our dataset. The x-axis bound represents a p-value of 0.05.
+
+```{r show volcano}
+volcanoplot(fit2_ANOVA, coef=c(2:ncol(model_ANOVA)), style = "p-value",
+            xlab = "log2 Fold Change", ylab = NULL, pch=16, cex=0.35, xlim=c(-5, 5), ylim=c(0, 6), highlight = 10, hl.col = "blue", names=rownames(fit_ANOVA))
+abline(h=1.3,v=0, lty=2, col="red")
+```
+The top differentially expressed genes are as follows (without taking into account valid p-value and adjusted p-value), 
+
+```{r show top genes}
+#Based on topTable
+head(topfit_ANOVA, n=10)
+
+#Based on P-value
+head(output_hits_ANOVA, n=10)
+```
+
+__4. Visualize your top hits using a heatmap. Do you conditions cluster together? Explain why or why not.__
+
+There is subtle clustering in this heatmap, but it's not very clear.
+
+```{r show heatmap condition}
+top_hits <- output_hits_ANOVA$ensembl_gene_id[output_hits_ANOVA$P.Value<0.05]
+heatmap_matrix_tophits <- t(
+  scale(t(heatmap_matrix[
+    which(rownames(heatmap_matrix) %in% top_hits),])))
+
+#Grouping samples based on time condition (i.e. pre or post 5 days of bed rest) and susceptability to disuse-induced insulin resistance (i.e. low, high, if available)
+heatmap_matrix_tophits<- heatmap_matrix_tophits[,
+                                                c(grep(colnames(heatmap_matrix_tophits),pattern = "pre\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "pre\\_high"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "pre$"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "post\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "post\\_high"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "post$"))]
+if(min(heatmap_matrix_tophits) == 0){
+  heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), 
+                           c( "white", "red"))
+} else {
+  heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red"))
+}
+
+#Create subtype annotation vector based on matrix columns for a top annotation bar
+typeAnno <- c()
+susAnno <- c()
+for (x in 1:ncol(heatmap_matrix_tophits)){
+  typeAnno <- append(typeAnno, samples[which(samples$id == lapply(strsplit(colnames(heatmap_matrix_tophits)[x], "_"), `[[`, 1)), 7])
+  susAnno <- append(susAnno, as.character(samples[which(samples$id == lapply(strsplit(colnames(heatmap_matrix_tophits)[x], "_"), `[[`, 1)), 5]))
+}
+
+n <- HeatmapAnnotation(type = typeAnno, susceptibility = susAnno)
+
+#Create and display heatmap
+time_sus_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = FALSE,
+                           show_row_dend = TRUE,
+                           show_column_dend = FALSE, 
+                           col=heatmap_col,
+                           show_column_names = FALSE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           top_annotation = n
+)
+time_sus_heatmap
+```
+
+I notice that if the patients are also sorted/grouped by age, there does seem to be subtle clustering of expression within the age groups (i.e. YOUNG, OLD) and time conditions (i.e. pre bed rest and post 5 days of bed rest). This clustering is supported by statements in the paper that aging corresponds to "biochemical, structural, and functional alterations in skeletal muscle" which therefore would reflect when comparing the expression of young and old patients samples. The clustering of the two time conditions are more prevalent in the old group, which is also supported by the paper.
+
+```{r show heatmap age}
+#Rename samples with descriptive labels for sorting (seen below)
+colnames(heatmap_matrix_tophits) <- GSE113165_data[match_index,"title"]
+
+#Grouping samples based on time condition (i.e. pre or post 5 days of bed rest), susceptability to disuse-induced insulin resistance (i.e. low, high, if available) and age.
+heatmap_matrix_tophits<- heatmap_matrix_tophits[,
+                                                c(grep(colnames(heatmap_matrix_tophits),pattern = "young.*pre\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "young.*pre\\_high"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "young.*post\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "young.*post\\_high"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*pre\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*pre\\_high"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*pre$"),
+                                                  
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*post\\_low"),
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*post\\_high"), 
+                                                  grep(colnames(heatmap_matrix_tophits),pattern = "old.*post$"))]
+if(min(heatmap_matrix_tophits) == 0){
+  heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), 
+                           c( "white", "red"))
+} else {
+  heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red"))
+}
+
+#Create subtype annotation vector based on matrix columns for a top annotation bar
+typeAnno <- c()
+susAnno <- c()
+for (x in 1:ncol(heatmap_matrix_tophits)){
+  typeAnno <- append(typeAnno, samples[which(samples$id == lapply(strsplit(colnames(heatmap_matrix_tophits)[x], "_"), `[[`, 1)), 7])
+  susAnno <- append(susAnno, as.character(samples[which(samples$id == lapply(strsplit(colnames(heatmap_matrix_tophits)[x], "_"), `[[`, 1)), 5]))
+}
+
+n <- HeatmapAnnotation(type = typeAnno, susceptibility = susAnno)
+
+#Create and display heatmap
+time_age_sus_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = FALSE,
+                           show_row_dend = TRUE,
+                           show_column_dend = TRUE, 
+                           col=heatmap_col,
+                           show_column_names = FALSE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           top_annotation = n
+)
+time_age_sus_heatmap
+```
+
+## Thresholded over-representation analysis
+
+```{r show thresholded gene list}
+#Read in supplementary files
+sfiles = getGEOSuppFiles('GSE70072')
+fnames = rownames(sfiles)
+my_exp = read.delim(fnames[1],header=TRUE,
+                       check.names = FALSE) 
+
+#Merge gene names with the top hits
+output_hits_ANOVA_withgn <- ""
+output_hits_ANOVA_withgn <- merge(my_exp[,1],output_hits_ANOVA, by.x=1, by.y = 2)
+output_hits_ANOVA_withgn[,c("old_pre_rank", "young_post_rank", "young_pre_rank")] <- -log(output_hits_ANOVA_withgn$P.Value,base =10) * sign(output_hits_ANOVA_withgn[,c("samples.typeold_pre", "samples.typeyoung_post", "samples.typeyoung_pre")])
+
+#Hits based on logFC values for each grouping/type
+output_hits_old_pre_rank <- output_hits_ANOVA_withgn[order(output_hits_ANOVA_withgn$old_pre_rank),]
+output_hits_young_post_rank <- output_hits_ANOVA_withgn[order(output_hits_ANOVA_withgn$young_post_rank),]
+output_hits_young_pre_rank <- output_hits_ANOVA_withgn[order(output_hits_ANOVA_withgn$young_pre_rank),]
+
+#Type-"old_pre" up/down regulated genes
+old_pre_upregulated_genes <- output_hits_old_pre_rank$hgnc_symbol[
+  which(output_hits_old_pre_rank$P.Value < 0.05 
+        & output_hits_old_pre_rank$samples.typeold_pre > 0)]
+old_pre_downregulated_genes <- output_hits_old_pre_rank$hgnc_symbol[
+  which(output_hits_old_pre_rank$P.Value < 0.05 
+        & output_hits_old_pre_rank$samples.typeold_pre < 0)]
+
+#Write gene names to file for future reference
+write.table(x=old_pre_upregulated_genes,
+            file=file.path("data","old_pre_upregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+write.table(x=old_pre_downregulated_genes,
+            file=file.path("data","old_pre_downregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+
+
+#Type-"young_post" up/down regulated genes
+young_post_upregulated_genes <- output_hits_young_post_rank$hgnc_symbol[
+  which(output_hits_young_post_rank$P.Value < 0.05 
+        & output_hits_young_post_rank$samples.typeyoung_post > 0)]
+young_post_downregulated_genes <- output_hits_young_post_rank$hgnc_symbol[
+  which(output_hits_young_post_rank$P.Value < 0.05 
+        & output_hits_young_post_rank$samples.typeyoung_post < 0)]
+
+#Write gene names to file for future reference
+write.table(x=young_post_upregulated_genes,
+            file=file.path("data","young_post_upregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+write.table(x=young_post_downregulated_genes,
+            file=file.path("data","young_post_downregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+
+#Type-"young_pre" up/down regulated genes
+young_pre_upregulated_genes <- output_hits_young_pre_rank$hgnc_symbol[
+  which(output_hits_young_pre_rank$P.Value < 0.05 
+        & output_hits_young_pre_rank$samples.typeyoung_pre > 0)]
+young_pre_downregulated_genes <- output_hits_young_pre_rank$hgnc_symbol[
+  which(output_hits_young_pre_rank$P.Value < 0.05 
+        & output_hits_young_pre_rank$samples.typeyoung_pre < 0)]
+
+#Write gene names to file for future reference
+write.table(x=young_pre_upregulated_genes,
+            file=file.path("data","young_pre_upregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+write.table(x=young_pre_downregulated_genes,
+            file=file.path("data","young_pre_downregulated_genes.txt"),sep = "\t",
+            row.names = FALSE,col.names = FALSE,quote = FALSE)
+```
+
+__1. Which method did you choose and why?__
+
+There was a pretty substantial difference between the limma and quasi methods, so I chose the limma results as it seemed to align best with the results of the paper and more refined (less genes).
+
+__2. What annotation data did you use and why? What version of the annotation are you using?__
+
+I decided to use g:Profiler, in particular the ```gprofiler2``` package, as it is familiar to me and also provides a wide variety of sources to get a good overview and grasp of the processess effected by the up and down regulated genes. "The package corresponds to the 2019 update of g:Profiler and provides access for versions e94_eg41_p11 and higher."
+
+__3. How many genesets were returned with what thresholds?__
+
+Number of genes in rank list for old_pre...
+```{r show genesets old_pre}
+nrow(output_hits_old_pre_rank)
+#Preview of table/thresholds
+head(output_hits_old_pre_rank)
+```
+
+Number of genes in rank list for young_post...
+```{r show genesets young_post}
+#Number of genes in rank list for young_post
+nrow(output_hits_young_post_rank)
+#Preview of table/thresholds
+head(output_hits_young_post_rank)
+```
+
+Number of genes in rank list for young_pre...
+```{r show genesets young_pre}
+
+#Number of genes in rank list for young_pre
+nrow(output_hits_young_pre_rank)
+#Preview of table/thresholds
+head(output_hits_young_pre_rank)
+```
+
+__4. Run the analysis using the up-regulated set of genes, and the down-regulated set of genes separately. How do these results compare to using the whole list?__
+
+I only analyzed the young post-bed rest samples for simplicity's sake.
+
+```{r show gprofiler queries, warning=FALSE, message=FALSE}
+#g:Profiler queries
+
+#Multi-query: young_post
+gostres2 <- gost(query = c(young_post_upregulated_genes,young_post_downregulated_genes), organism = "hsapiens", sources = c("HPA","HP"))
+gostres2up <- gost(query = young_post_upregulated_genes, organism = "hsapiens", sources = c("HPA","HP"))
+gostres2down <- gost(query = young_post_downregulated_genes, organism = "hsapiens", sources = c("HPA", "HP"))
+
+
+#Print tables
+pt2 <- publish_gosttable(head(gostres2, n = 10), 
+                         highlight_terms = gostres2$result[c(1:20),],
+                           use_colors = TRUE, 
+                           show_columns = c("term_id", "term_name"),
+                           filename = NULL)
+
+pt2up <- publish_gosttable(head(gostres2up, n = 10), 
+                           highlight_terms = gostres2up$result[c(1:20),],
+                         use_colors = TRUE, 
+                         show_columns = c("term_id", "term_name"),
+                         filename = NULL)
+
+pt2down <- publish_gosttable(head(gostres2down, n = 10), 
+                             highlight_terms = gostres2down$result[c(1:20),],
+                         use_colors = TRUE, 
+                         show_columns = c("term_id", "term_name"),
+                         filename = NULL)
+```
+
+## Interpretation
+
+__1. Do the over-representation results support conclusions or mechanism discussed in the original paper?__
+
+Based on the descriptions given by the g:profiler query, it seems that it results do support conclusions discussed in the original paper. Many of the genes are involved in processes that focus on estrogen and female reproductive organs, which also appear in the paper. Not all of the genes were queried above, however the downregulated genes for the young post-bed rest samples did not produce accurate results - this is likely due to my source specification. 
+
+__2. Can you find evidence, i.e. publications, to support some of the results that you see. How does this evidence support your results.__
+
+In a 2018 study by Dickinson JM et. al. in which the transcriptome of leg skeletal muscle before and after divergent exercise stimuli was observed, the results highlight a notable "increase in estrogen-related receptor-γ". However it is difficult to find more papers to support this finding. It is likely the presence of other highlighted genes in the paper that supports the change in the transcriptome of vastus lateralis cells.
+
+## References
+[1] Davis S, Meltzer P (2007). “GEOquery: a bridge between the Gene Expression Omnibus (GEO) and BioConductor.” Bioinformatics, 14, 1846–1847.
+
+[2] Durinck S, Spellman P, Birney E, Huber W (2009). “Mapping identifiers for the integration of genomic datasets with the R/Bioconductor package biomaRt.” Nature Protocols, 4, 1184–1191.
+
+[3] Durinck S, Moreau Y, Kasprzyk A, Davis S, De Moor B, Brazma A, Huber W (2005). “BioMart and Bioconductor: a powerful link between biological databases and microarray data analysis.” Bioinformatics, 21, 3439–3440.
+
+[4] Robinson MD, McCarthy DJ, Smyth GK (2010). “edgeR: a Bioconductor package for differential expression analysis of digital gene expression data.” Bioinformatics, 26(1), 139-140. doi: 10.1093/bioinformatics/btp616.
+
+[5] McCarthy DJ, Chen Y, Smyth GK (2012). “Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation.” Nucleic Acids Research, 40(10), 4288-4297. doi: 10.1093/nar/gks042.
+
+[6] Yihui Xie (2020). knitr: A General-Purpose Package for Dynamic Report Generation in R. R package version 1.27.
+
+[7] Yihui Xie (2015) Dynamic Documents with R and knitr. 2nd edition. Chapman and Hall/CRC. ISBN 978-1498716963
+
+[8] Yihui Xie (2014) knitr: A Comprehensive Tool for Reproducible Research in R. In Victoria Stodden, Friedrich Leisch and Roger D. Peng, editors, Implementing Reproducible Computational Research.Chapman and Hall/CRC. ISBN 978-1466561595
+
+[9] Gu, Z. (2016) Complex heatmaps reveal patterns and correlations in multidimensional genomic data. Bioinformatics.
+
+[10] Gu, Z. (2014) circlize implements and enhances circular visualization in R. Bioinformatics.
+
+[11] Hadley Wickham, Romain François, Lionel Henry and Kirill Müller (2020). dplyr: A Grammar of Data Manipulation. R package version 0.8.4. https://CRAN.R-project.org/package=dplyr
+
+[12] Mahmassani ZS, Reidy PT, McKenzie AI, Stubben C et al. Age-dependent skeletal muscle transcriptome response to bed rest-induced atrophy. J Appl Physiol (1985) 2019 Apr 1;126(4):894-902. PMID: 30605403
+
+[13] Mahmassani ZS, Reidy PT, McKenzie AI, Stubben C et al. Disuse-induced insulin resistance susceptibility coincides with a dysregulated skeletal muscle metabolic transcriptome. J Appl Physiol (1985) 2019 May 1;126(5):1419-1429. PMID: 30763167
+
+[14] Isserlin R, BCB420-lectures-public, (2020), GitHub repository, https://github.com/risserlin/BCB420-lectures-public
+
+[15] https://support.bioconductor.org/p/12441/
+
+[16] https://support.bioconductor.org/p/18967/
+
+[17] Liis Kolberg and Uku Raudvere (2019). gprofiler2: Interface to the 'g:Profiler' Toolset. R package
+  version 0.1.8. https://CRAN.R-project.org/package=gprofiler2
+
+[18] 	Dickinson JM, D'Lugos AC, Naymik MA, Siniard AL et al. Transcriptome response of human skeletal muscle to divergent exercise stimuli. J Appl Physiol (1985) 2018 Jun 1;124(6):1529-1540. PMID: 29543133
